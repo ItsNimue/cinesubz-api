@@ -91,7 +91,7 @@ fastify.get('/api/movie', async (request, reply) => {
         const $ = cheerio.load(data);
 
         const title = $('h1.entry-title, h1.title-post, h1').first().text().trim();
-        const posterEl = $('.poster img, .entry-content img, .post-thumbnail img, img[class*="poster"]').first();
+        const posterEl = $('.poster img, .entry-content img, .post-thumbnail img').first();
         
         let poster = posterEl.attr('src');
         if (!poster) poster = posterEl.attr('data-src');
@@ -100,82 +100,35 @@ fastify.get('/api/movie', async (request, reply) => {
 
         const dl_links = [];
 
-        // CineSubz Download Table & Links Extract කිරීම
+        // සැබෑ Download Links පමණක් Filter කර ලබා ගැනීම
         $('a').each((_, el) => {
             const link = $(el).attr('href');
             if (!link) return;
 
             // Internal page anchors (#) සහ invalid links ඉවත් කිරීම
-            if (link.startsWith('#') || link.startsWith('javascript:') || link.startsWith('mailto:')) return;
+            if (link.startsWith('#') || link.startsWith('javascript:') || link.includes('#directandtgdownload')) return;
             if (!link.startsWith('http://') && !link.startsWith('https://')) return;
 
-            // Site main navigation links ඉවත් කිරීම
-            if (
-                link === BASE_URL || 
-                link === `${BASE_URL}/` || 
-                link.includes('/category/') || 
-                link.includes('/genre/') || 
-                link.includes('/year/') || 
-                link.includes('/quality/') || 
-                link.includes('/languages/') || 
-                link === movieUrl
-            ) return;
+            let text = $(el).text().trim();
+            if (!text) text = $(el).attr('title');
+            if (!text) text = '';
 
-            let text = $(el).text().replace(/\s+/g, ' ').trim();
-            if (!text) text = $(el).attr('title') || '';
+            // Section buttons / Header text ඉවත් කිරීම
+            if (text.includes('Direct & Telegram') || text.includes('Download Links')) return;
 
-            // Parent row context (Quality: 720p, 1080p etc.)
-            const parentText = $(el).closest('tr, li, div, p').text().replace(/\s+/g, ' ').trim();
-
-            // Check if link matches download domains or keywords
-            const isDlDomain = /pixeldrain|mega\.nz|drive\.google|mediafire|gofile|workers\.dev|telegram|t\.me|\/links\/|\/download\/|\?download=|fastdl|direct/i.test(link);
-            const hasQualityTag = /480p|720p|1080p|2160p|4k|hd|sd|mkv|mp4|download|direct|pixeldrain|mega|server/i.test(text) || /480p|720p|1080p|2160p|4k|download/i.test(parentText);
-
-            // Skip non-download buttons
-            if (text.includes('Direct & Telegram') || text.includes('Watch Online') || text.includes('Trailer')) return;
+            // Link එක Host domain එකකට (Pixeldrain, Mega, Drive etc.) හෝ Quality tag එකකට අයිතිදැයි බලයි
+            const isDlDomain = /pixeldrain|mega\.nz|drive\.google|mediafire|gofile|workers\.dev|file|download/i.test(link);
+            const hasQualityTag = /480p|720p|1080p|2160p|4k|hd|sd|mkv|mp4/i.test(text) || /480p|720p|1080p/i.test(link);
 
             if (isDlDomain || hasQualityTag) {
-                let quality = text;
-
-                if (!quality || quality.length < 3 || /^download$/i.test(quality) || /^direct download$/i.test(quality)) {
-                    const resMatch = parentText.match(/480p|720p|1080p|2160p|4k/i);
-                    if (resMatch) {
-                        quality = `${resMatch[0]} - ${quality || 'Download Link'}`;
-                    } else if (parentText.length > 0 && parentText.length < 60) {
-                        quality = parentText;
-                    } else {
-                        quality = 'Download Link';
-                    }
-                }
+                let quality = text.replace(/\s+/g, ' ').trim();
+                if (!quality) quality = 'Download Link';
 
                 if (!dl_links.some(d => d.link === link)) {
                     dl_links.push({ quality, link });
                 }
             }
         });
-
-        // Fallback: If no links matched above, scan all tables & download blocks
-        if (dl_links.length === 0) {
-            $('table a, .download-links a, #download a, div[class*="download"] a, .entry-content table a').each((_, el) => {
-                const link = $(el).attr('href');
-                if (!link || !link.startsWith('http')) return;
-                
-                let text = $(el).text().replace(/\s+/g, ' ').trim() \vert{}\vert{}$(el).attr('title') || '';
-                const parentText = $(el).closest('tr, td, li, div').text().replace(/\s+/g, ' ').trim();
-                
-                let quality = text;
-                const resMatch = parentText.match(/480p|720p|1080p|2160p|4k/i);
-                if (resMatch) {
-                    quality = `${resMatch[0]} - ${quality || 'Download'}`;
-                } else if (!quality) {
-                    quality = 'Download Link';
-                }
-
-                if (!dl_links.some(d => d.link === link)) {
-                    dl_links.push({ quality, link });
-                }
-            });
-        }
 
         return { status: true, result: { title, poster, dl_links } };
     } catch (err) {
