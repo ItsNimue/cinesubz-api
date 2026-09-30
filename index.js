@@ -16,6 +16,7 @@ fastify.get('/', async () => {
     return { status: true, message: 'CineSubz API is running successfully!' };
 });
 
+// Search Endpoint
 fastify.get('/api/search', async (request, reply) => {
     try {
         const query = request.query.q;
@@ -80,6 +81,7 @@ fastify.get('/api/search', async (request, reply) => {
     }
 });
 
+// Movie Details & Direct Quality Links Endpoint
 fastify.get('/api/movie', async (request, reply) => {
     try {
         const movieUrl = request.query.url;
@@ -98,14 +100,33 @@ fastify.get('/api/movie', async (request, reply) => {
 
         const dl_links = [];
 
-        $('a[href*="mega"], a[href*="drive"], a[href*="pixeldrain"], a[href*="download"], .download-link a').each((_, el) => {
-            let quality = $(el).text().trim();
-            if (!quality) quality = $(el).attr('title');
-            if (!quality) quality = 'Download Link';
-
+        // සැබෑ Download Links පමණක් Filter කර ලබා ගැනීම
+        $('a').each((_, el) => {
             const link = $(el).attr('href');
-            if (link && !dl_links.some(d => d.link === link)) {
-                dl_links.push({ quality, link });
+            if (!link) return;
+
+            // Internal page anchors (#) සහ invalid links ඉවත් කිරීම
+            if (link.startsWith('#') || link.startsWith('javascript:') || link.includes('#directandtgdownload')) return;
+            if (!link.startsWith('http://') && !link.startsWith('https://')) return;
+
+            let text = $(el).text().trim();
+            if (!text) text = $(el).attr('title');
+            if (!text) text = '';
+
+            // Section buttons / Header text ඉවත් කිරීම
+            if (text.includes('Direct & Telegram') || text.includes('Download Links')) return;
+
+            // Link එක Host domain එකකට (Pixeldrain, Mega, Drive etc.) හෝ Quality tag එකකට අයිතිදැයි බලයි
+            const isDlDomain = /pixeldrain|mega\.nz|drive\.google|mediafire|gofile|workers\.dev|file|download/i.test(link);
+            const hasQualityTag = /480p|720p|1080p|2160p|4k|hd|sd|mkv|mp4/i.test(text) || /480p|720p|1080p/i.test(link);
+
+            if (isDlDomain || hasQualityTag) {
+                let quality = text.replace(/\s+/g, ' ').trim();
+                if (!quality) quality = 'Download Link';
+
+                if (!dl_links.some(d => d.link === link)) {
+                    dl_links.push({ quality, link });
+                }
             }
         });
 
