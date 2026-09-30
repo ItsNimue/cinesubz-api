@@ -54,7 +54,7 @@ fastify.get('/api/search', async (request, reply) => {
         if (results.length === 0) {
             $('a[href*="/movies/"], a[href*="/tvshows/"]').each((_, el) => {
                 const link = $(el).attr('href');
-                const title = $(el).attr('title') \vert{}\vert{}$(el).text().trim();
+                const title = $(el).attr('title') || $(el).text().trim();
                 const imgEl = $(el).find('img').first();
                 const image = imgEl.attr('src') || imgEl.attr('data-src') || imgEl.attr('data-lazy-src') || '';
 
