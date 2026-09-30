@@ -81,7 +81,7 @@ fastify.get('/api/search', async (request, reply) => {
     }
 });
 
-// Movie Details & Quality Links Endpoint
+// Movie Details & Pure Quality Links Endpoint
 fastify.get('/api/movie', async (request, reply) => {
     try {
         const movieUrl = request.query.url;
@@ -104,43 +104,45 @@ fastify.get('/api/movie', async (request, reply) => {
             const link = $(el).attr('href');
             if (!link) return;
 
-            if (link.startsWith('#') || link.startsWith('javascript:') || link.startsWith('mailto:')) return;
             if (!link.startsWith('http://') && !link.startsWith('https://')) return;
 
-            const isNav = link === BASE_URL || 
-                          link === `${BASE_URL}/` || 
-                          link.includes('/category/') || 
-                          link.includes('/genre/') || 
-                          link.includes('/year/') || 
-                          link.includes('/quality/') || 
-                          link.includes('/languages/') || 
-                          link === movieUrl;
-            if (isNav) return;
+            // 1. HARD BLOCK unnecessary links (Director, Actor, Telegram, Navigations)
+            if (
+                /telegram|t\.me|facebook|twitter|instagram|whatsapp/i.test(link) ||
+                /\/director\/|\/actor\/|\/tag\/|\/category\/|\/genre\/|\/author\/|\/year\/|\/quality\/|\/languages\//i.test(link) ||
+                link === BASE_URL || link === `${BASE_URL}/` || link === movieUrl
+            ) return;
 
             let text = $(el).text().replace(/\s+/g, ' ').trim();
-            if (!text) {
-                text = $(el).attr('title') || '';
-            }
+            if (!text) text = $(el).attr('title') || '';
 
-            const parentText = $(el).closest('tr, li, div, p').text().replace(/\s+/g, ' ').trim();
+            // Block telegram / watch online buttons
+            if (/telegram|channel|group|watch online|trailer|comment|reply|share/i.test(text)) return;
 
-            const isDlDomain = /pixeldrain|mega\.nz|drive\.google|mediafire|gofile|workers\.dev|telegram|t\.me|\/links\/|\/download\/|\?download=|fastdl|direct/i.test(link);
-            const hasQualityTag = /480p|720p|1080p|2160p|4k|hd|sd|mkv|mp4|download|direct|pixeldrain|mega|server/i.test(text) || /480p|720p|1080p|2160p|4k|download/i.test(parentText);
+            // 2. Strict Check for Host Domains OR Resolution Tags (480p, 720p, 1080p, 2160p, 4k)
+            const isDlHost = /pixeldrain|mega\.nz|drive\.google|mediafire|gofile|workers\.dev|\/links\/|\/download\/|\?download=/i.test(link);
+            const hasResolution = /(480p|720p|1080p|2160p|4k)/i.test(text) || /(480p|720p|1080p|2160p|4k)/i.test(link);
 
-            if (text.includes('Direct & Telegram') || text.includes('Watch Online') || text.includes('Trailer')) return;
+            // Check immediate table row or paragraph for quality name
+            const containerText = $(el).closest('tr, td, p, li').text().replace(/\s+/g, ' ').trim();
+            const containerResMatch = containerText.match(/(480p|720p|1080p|2160p|4k)/i);
 
-            if (isDlDomain || hasQualityTag) {
-                let quality = text;
+            if (isDlHost || hasResolution || containerResMatch) {
+                let quality = '';
 
-                if (!quality || quality.length < 3 || /^download$/i.test(quality) || /^direct download$/i.test(quality)) {
-                    const resMatch = parentText.match(/480p|720p|1080p|2160p|4k/i);
-                    if (resMatch) {
-                        quality = resMatch[0] + ' - ' + (quality ? quality : 'Download Link');
-                    } else if (parentText.length > 0 && parentText.length < 60) {
-                        quality = parentText;
-                    } else {
-                        quality = 'Download Link';
-                    }
+                const resFound = text.match(/(480p|720p|1080p|2160p|4k)/i) || 
+                                 link.match(/(480p|720p|1080p|2160p|4k)/i) || 
+                                 containerResMatch;
+
+                if (resFound) {
+                    const res = resFound[0].toUpperCase();
+                    const sizeMatch = containerText.match(/(\d+(\.\d+)?\s*(mb|gb))/i);
+                    const size = sizeMatch ? ` - ${sizeMatch[0].toUpperCase()}` : '';
+                    quality = `${res}${size}`;
+                } else if (text && text.length > 2 && text.length < 40 && !/download/i.test(text)) {
+                    quality = text;
+                } else {
+                    quality = 'Direct Download';
                 }
 
                 if (!dl_links.some((d) => d.link === link)) {
@@ -149,31 +151,23 @@ fastify.get('/api/movie', async (request, reply) => {
             }
         });
 
-        if (dl_links.length === 0) {
-            $('table a, .download-links a, #download a, div[class*="download"] a, .entry-content table a').each((_, el) => {
-                const link = $(el).attr('href');
-                if (!link || !link.startsWith('http')) return;
-                
-                let text = $(el).text().replace(/\s+/g, ' ').trim();
-                if (!text) text = $(el).attr('title') || '';
-                
-                const parentText = $(el).closest('tr, td, li, div').text().replace(/\s+/g, ' ').trim();
-                
-                let quality = text;
-                const resMatch = parentText.match(/480p|720p|1080p|2160p|4k/i);
-                if (resMatch) {
-                    quality = resMatch[0] + ' - ' + (quality ? quality : 'Download');
-                } else if (!quality) {
-                    quality = 'Download Link';
-                }
+        // Clean duplicates & add option labels if needed
+        const cleanedLinks = [];
+        const seenQualities = new Map();
 
-                if (!dl_links.some((d) => d.link === link)) {
-                    dl_links.push({ quality, link });
-                }
-            });
-        }
+        dl_links.forEach((item) => {
+            let qName = item.quality;
+            if (!seenQualities.has(qName)) {
+                seenQualities.set(qName, 1);
+                cleanedLinks.push({ quality: qName, link: item.link });
+            } else {
+                const count = seenQualities.get(qName) + 1;
+                seenQualities.set(qName, count);
+                cleanedLinks.push({ quality: `${qName} (Server ${count})`, link: item.link });
+            }
+        });
 
-        return { status: true, result: { title, poster, dl_links } };
+        return { status: true, result: { title, poster, dl_links: cleanedLinks } };
     } catch (err) {
         return reply.status(500).send({ status: false, error: err.message });
     }
