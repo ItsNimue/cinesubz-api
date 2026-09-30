@@ -81,7 +81,7 @@ fastify.get('/api/search', async (request, reply) => {
     }
 });
 
-// Movie Details & Pure Quality Links Endpoint
+// Universal Movie Download Links Endpoint
 fastify.get('/api/movie', async (request, reply) => {
     try {
         const movieUrl = request.query.url;
@@ -106,43 +106,36 @@ fastify.get('/api/movie', async (request, reply) => {
 
             if (!link.startsWith('http://') && !link.startsWith('https://')) return;
 
-            // 1. HARD BLOCK unnecessary links (Director, Actor, Telegram, Navigations)
+            // Block Social Share & standard category navigation
             if (
-                /telegram|t\.me|facebook|twitter|instagram|whatsapp/i.test(link) ||
-                /\/director\/|\/actor\/|\/tag\/|\/category\/|\/genre\/|\/author\/|\/year\/|\/quality\/|\/languages\//i.test(link) ||
+                /facebook|twitter|whatsapp|pinterest|tumblr|telegram\.me|t\.me\/share/i.test(link) ||
+                /\/category\/|\/genre\/|\/tag\/|\/actor\/|\/director\/|\/author\/|\/year\/|\/quality\/|\/languages\//i.test(link) ||
                 link === BASE_URL || link === `${BASE_URL}/` || link === movieUrl
             ) return;
 
-            let text = $(el).text().replace(/\s+/g, ' ').trim();
-            if (!text) text = $(el).attr('title') || '';
+            const text = $(el).text().replace(/\s+/g, ' ').trim();
+            const parentText = $(el).closest('div, p, li, tr, td, article').text().replace(/\s+/g, ' ').trim();
+            const combinedText = `${text} ${parentText}`;
 
-            // Block telegram / watch online buttons
-            if (/telegram|channel|group|watch online|trailer|comment|reply|share/i.test(text)) return;
+            // Catch ANY download option card that has resolution (480p, 720p, 1080p, 2160p, 4k) or file size
+            const hasResolution = /(480p|720p|1080p|2160p|4k)/i.test(combinedText);
+            const isDownloadPath = /zt-links|csplayer|pixeldrain|mega\.nz|mediafire|gofile|drive\.google|\/download\/|\/links\//i.test(link);
 
-            // 2. Strict Check for Host Domains OR Resolution Tags (480p, 720p, 1080p, 2160p, 4k)
-            const isDlHost = /pixeldrain|mega\.nz|drive\.google|mediafire|gofile|workers\.dev|\/links\/|\/download\/|\?download=/i.test(link);
-            const hasResolution = /(480p|720p|1080p|2160p|4k)/i.test(text) || /(480p|720p|1080p|2160p|4k)/i.test(link);
+            if (hasResolution || isDownloadPath) {
+                const resMatch = combinedText.match(/(480p|720p|1080p|2160p|4k)/i);
+                const typeMatch = combinedText.match(/(WEB-DL|HDRip|BDRip|Bluray|HDTV)/i);
+                const sizeMatch = combinedText.match(/(\d+(\.\d+)?\s*(MB|GB))/i);
 
-            // Check immediate table row or paragraph for quality name
-            const containerText = $(el).closest('tr, td, p, li').text().replace(/\s+/g, ' ').trim();
-            const containerResMatch = containerText.match(/(480p|720p|1080p|2160p|4k)/i);
-
-            if (isDlHost || hasResolution || containerResMatch) {
                 let quality = '';
-
-                const resFound = text.match(/(480p|720p|1080p|2160p|4k)/i) || 
-                                 link.match(/(480p|720p|1080p|2160p|4k)/i) || 
-                                 containerResMatch;
-
-                if (resFound) {
-                    const res = resFound[0].toUpperCase();
-                    const sizeMatch = containerText.match(/(\d+(\.\d+)?\s*(mb|gb))/i);
+                if (resMatch) {
+                    const res = resMatch[0].toUpperCase();
+                    const type = typeMatch ? `${typeMatch[0].toUpperCase()} ` : '';
                     const size = sizeMatch ? ` - ${sizeMatch[0].toUpperCase()}` : '';
-                    quality = `${res}${size}`;
-                } else if (text && text.length > 2 && text.length < 40 && !/download/i.test(text)) {
+                    quality = `${type}${res}${size}`.trim();
+                } else if (text && text.length > 2 && text.length < 50 && !/direct & telegram/i.test(text)) {
                     quality = text;
                 } else {
-                    quality = 'Direct Download';
+                    quality = 'Download Link';
                 }
 
                 if (!dl_links.some((d) => d.link === link)) {
@@ -151,7 +144,7 @@ fastify.get('/api/movie', async (request, reply) => {
             }
         });
 
-        // Clean duplicates & add option labels if needed
+        // Ensure clean list & fallback deduplication
         const cleanedLinks = [];
         const seenQualities = new Map();
 
@@ -163,7 +156,7 @@ fastify.get('/api/movie', async (request, reply) => {
             } else {
                 const count = seenQualities.get(qName) + 1;
                 seenQualities.set(qName, count);
-                cleanedLinks.push({ quality: `${qName} (Server ${count})`, link: item.link });
+                cleanedLinks.push({ quality: `${qName} (Option ${count})`, link: item.link });
             }
         });
 
