@@ -19,7 +19,7 @@ fastify.get('/api/search', async (request, reply) => {
         $('article, .result-item, .item').each((_, el) => {
             const title = $(el).find('.title a, h2 a, .entry-title a').text().trim();
             const link = $(el).find('.title a, h2 a, .entry-title a').attr('href');
-            const image = $(el).find('img').attr('src') \vert{}\vert{}$(el).find('img').attr('data-src');
+            const image = $(el).find('img').attr('src') || $(el).find('img').attr('data-src');
             if (title && link) results.push({ title, link, image });
         });
 
