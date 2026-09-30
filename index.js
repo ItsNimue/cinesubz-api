@@ -16,6 +16,68 @@ fastify.get('/', async () => {
     return { status: true, message: 'CineSubz API is running successfully!' };
 });
 
+// Helper function to automatically resolve intermediate pages to direct MP4 download link
+async function resolveFinalDirectLink(initialUrl) {
+    try {
+        if (!initialUrl || !initialUrl.startsWith('http')) return initialUrl;
+
+        // If it's already a direct video file link, return immediately
+        if (/\.(mp4|mkv)(\?.*)?$/i.test(initialUrl) && !initialUrl.includes('csplayer') && !initialUrl.includes('zt-links')) {
+            return initialUrl;
+        }
+
+        // Step 1: Request zt-links / landing page
+        let currentData = '';
+        try {
+            const res1 = await axios.get(initialUrl, { headers, timeout: 8000 });
+            currentData = res1.data;
+        } catch {
+            return initialUrl;
+        }
+
+        let $ = cheerio.load(currentData);
+        
+        // Find "Go to Download Page" or csplayer link
+        let nextUrl = $('a[href*="csplayer"], a[href*="drive."], a:contains("Download Page")').first().attr('href');
+        
+        if (!nextUrl) {
+            $('a').each((_, el) => {
+                const href = $(el).attr('href');
+                if (href && (href.includes('csplayer') || href.includes('/server') || href.includes('drive.'))) {
+                    if (!nextUrl) nextUrl = href;
+                }
+            });
+        }
+
+        if (!nextUrl) return initialUrl;
+
+        // Step 2: Request csplayer / server download page
+        try {
+            const res2 = await axios.get(nextUrl, { headers, timeout: 8000 });
+            $ = cheerio.load(res2.data);
+            
+            let finalDirectLink = '';
+            $('a').each((_, el) => {
+                const href = $(el).attr('href');
+                const text = $(el).text();
+                
+                // Catch Direct Download 1 / 2 links (e.g. supercloud / mp4 links)
+                if (href && (href.includes('supercloud') || href.includes('.mp4') || href.includes('.mkv') || /direct download/i.test(text))) {
+                    if (!finalDirectLink && href.startsWith('http')) {
+                        finalDirectLink = href;
+                    }
+                }
+            });
+
+            return finalDirectLink || nextUrl;
+        } catch {
+            return nextUrl;
+        }
+    } catch {
+        return initialUrl;
+    }
+}
+
 // Search Endpoint
 fastify.get('/api/search', async (request, reply) => {
     try {
@@ -53,35 +115,13 @@ fastify.get('/api/search', async (request, reply) => {
             }
         });
 
-        if (results.length === 0) {
-            $('a[href*="/movies/"], a[href*="/tvshows/"]').each((_, el) => {
-                const link = $(el).attr('href');
-                let title = $(el).attr('title');
-                if (!title) title = $(el).text().trim();
-
-                const imgEl = $(el).find('img').first();
-                let image = imgEl.attr('src');
-                if (!image) image = imgEl.attr('data-src');
-                if (!image) image = imgEl.attr('data-lazy-src');
-                if (!image) image = '';
-
-                if (title && link && !results.some(r => r.link === link)) {
-                    results.push({
-                        title: title.replace(/\s+/g, ' ').trim(),
-                        link: link,
-                        image: image
-                    });
-                }
-            });
-        }
-
         return { status: true, count: results.length, result: results };
     } catch (err) {
         return reply.status(500).send({ status: false, error: err.message });
     }
 });
 
-// Universal Movie Download Links Endpoint
+// Movie Endpoint with Direct Video Resolution
 fastify.get('/api/movie', async (request, reply) => {
     try {
         const movieUrl = request.query.url;
@@ -98,15 +138,12 @@ fastify.get('/api/movie', async (request, reply) => {
         if (!poster) poster = posterEl.attr('data-lazy-src');
         if (!poster) poster = '';
 
-        const dl_links = [];
+        const rawLinks = [];
 
         $('a').each((_, el) => {
             const link = $(el).attr('href');
-            if (!link) return;
+            if (!link || !link.startsWith('http')) return;
 
-            if (!link.startsWith('http://') && !link.startsWith('https://')) return;
-
-            // Block Social Share & standard category navigation
             if (
                 /facebook|twitter|whatsapp|pinterest|tumblr|telegram\.me|t\.me\/share/i.test(link) ||
                 /\/category\/|\/genre\/|\/tag\/|\/actor\/|\/director\/|\/author\/|\/year\/|\/quality\/|\/languages\//i.test(link) ||
@@ -117,7 +154,6 @@ fastify.get('/api/movie', async (request, reply) => {
             const parentText = $(el).closest('div, p, li, tr, td, article').text().replace(/\s+/g, ' ').trim();
             const combinedText = `${text} ${parentText}`;
 
-            // Catch ANY download option card that has resolution (480p, 720p, 1080p, 2160p, 4k) or file size
             const hasResolution = /(480p|720p|1080p|2160p|4k)/i.test(combinedText);
             const isDownloadPath = /zt-links|csplayer|pixeldrain|mega\.nz|mediafire|gofile|drive\.google|\/download\/|\/links\//i.test(link);
 
@@ -138,17 +174,24 @@ fastify.get('/api/movie', async (request, reply) => {
                     quality = 'Download Link';
                 }
 
-                if (!dl_links.some((d) => d.link === link)) {
-                    dl_links.push({ quality, link });
+                if (!rawLinks.some((d) => d.link === link)) {
+                    rawLinks.push({ quality, link });
                 }
             }
         });
 
-        // Ensure clean list & fallback deduplication
+        // Automatically bypass intermediate pages to return direct .mp4 links
+        const resolvedLinks = await Promise.all(
+            rawLinks.map(async (item) => {
+                const finalUrl = await resolveFinalDirectLink(item.link);
+                return { quality: item.quality, link: finalUrl };
+            })
+        );
+
         const cleanedLinks = [];
         const seenQualities = new Map();
 
-        dl_links.forEach((item) => {
+        resolvedLinks.forEach((item) => {
             let qName = item.quality;
             if (!seenQualities.has(qName)) {
                 seenQualities.set(qName, 1);
