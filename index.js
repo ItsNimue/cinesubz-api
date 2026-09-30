@@ -6,96 +6,107 @@ const fastify = Fastify({ logger: false });
 const BASE_URL = 'https://cinesubz.co';
 
 const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.5',
     'Referer': BASE_URL
 };
 
-fastify.get('/', async () => {
-    return { status: true, message: 'CineSubz API is running successfully!' };
-});
-
-// Helper function to resolve intermediate pages to direct MP4 video URL
+// Deep Scraper: Bypasses zt-links -> csplayer -> Extracts Direct MP4 Supercloud Video Link
 async function resolveFinalDirectLink(initialUrl) {
     try {
         if (!initialUrl || !initialUrl.startsWith('http')) return initialUrl;
 
-        // Return if it's already a direct mp4 link on direct host
+        // If already a direct mp4 link, return it
         if (/\.(mp4|mkv)(\?.*)?$/i.test(initialUrl) && !initialUrl.includes('csplayer') && !initialUrl.includes('zt-links')) {
             return initialUrl;
         }
 
-        // Step 1: Fetch zt-links / intermediate page
-        let res1;
-        try {
-            res1 = await axios.get(initialUrl, { 
-                headers: { ...headers, Referer: BASE_URL }, 
-                timeout: 10000, 
-                maxRedirects: 5 
-            });
-        } catch {
-            return initialUrl;
-        }
+        const reqHeaders = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Referer': BASE_URL
+        };
 
-        let $ = cheerio.load(res1.data);
+        // Step 1: Request zt-links page
+        const res1 = await axios.get(initialUrl, { 
+            headers: reqHeaders, 
+            timeout: 12000, 
+            maxRedirects: 10,
+            validateStatus: () => true 
+        });
 
-        // Extract CSPlayer link (Exclude google.com explicitly)
-        let csPlayerLink = '';
-        $('a').each((_, el) => {
-            const href = $(el).attr('href');
-            if (!href) return;
+        if (!res1.data || typeof res1.data !== 'string') return initialUrl;
+        const html1 = res1.data;
+        const $1 = cheerio.load(html1);
 
-            let fullHref = href;
-            try { fullHref = new URL(href, initialUrl).href; } catch {}
-
-            if (fullHref.includes('google.com') || fullHref.includes('drive.google.com')) return;
-
-            if (fullHref.includes('csplayer') || fullHref.includes('/server') || $(el).text().includes('Download Page')) {
-                if (!csPlayerLink) csPlayerLink = fullHref;
+        let csPlayerUrl = '';
+        $1('a').each((_, el) => {
+            const href = $1(el).attr('href');
+            if (href && (href.includes('csplayer') || href.includes('drive.') || href.includes('/server'))) {
+                if (!csPlayerUrl) csPlayerUrl = href;
             }
         });
 
-        if (!csPlayerLink) return initialUrl;
-
-        // Step 2: Fetch CSPlayer page (e.g. drive.csplayer2.space)
-        let res2;
-        try {
-            res2 = await axios.get(csPlayerLink, { 
-                headers: { ...headers, Referer: initialUrl }, 
-                timeout: 10000, 
-                maxRedirects: 5 
-            });
-        } catch {
-            return csPlayerLink;
+        // Regex fallback for step 1
+        if (!csPlayerUrl) {
+            const csMatch = html1.match(/https?:\/\/[^\s"'<>]*csplayer[^\s"'<>]*/i) ||
+                           html1.match(/https?:\/\/[^\s"'<>]*drive\.[^\s"'<>]*/i);
+            if (csMatch) csPlayerUrl = csMatch[0];
         }
 
-        $ = cheerio.load(res2.data);
+        if (!csPlayerUrl) return initialUrl;
 
-        // Step 3: Extract Direct Download 1 / 2 link (e.g. supercloud / direct .mp4)
-        let directVideoLink = '';
-        $('a').each((_, el) => {
-            const href = $(el).attr('href');
-            if (!href) return;
+        // Step 2: Request csplayer page (e.g. drive.csplayer2.space)
+        const res2 = await axios.get(csPlayerUrl, { 
+            headers: { ...reqHeaders, Referer: initialUrl }, 
+            timeout: 12000, 
+            maxRedirects: 10,
+            validateStatus: () => true 
+        });
 
-            let fullHref = href;
-            try { fullHref = new URL(href, csPlayerLink).href; } catch {}
+        if (!res2.data || typeof res2.data !== 'string') return csPlayerUrl;
+        const html2 = res2.data;
 
-            if (fullHref.includes('google.com')) return;
+        // Direct Regex Extraction from HTML Body for Supercloud Direct MP4 Video URL with Token
+        const directSupercloudRegex = /https?:\/\/[^\s"'<>]+supercloud[^\s"'<>]+\.(mp4|mkv)\?[^\s"'<>]*/gi;
+        const supercloudMatches = html2.match(directSupercloudRegex);
 
-            const text = $(el).text().trim();
-            if (fullHref.includes('supercloud') || /\.(mp4|mkv)(\?.*)?$/i.test(fullHref) || /direct download/i.test(text)) {
-                if (!directVideoLink && fullHref.startsWith('http')) {
-                    directVideoLink = fullHref;
+        if (supercloudMatches && supercloudMatches.length > 0) {
+            return supercloudMatches[0];
+        }
+
+        // Fallback General Video Regex Match
+        const generalVideoRegex = /https?:\/\/[^\s"'<>]+\.(mp4|mkv)(\?[^\s"'<>]*)?/gi;
+        const genMatches = html2.match(generalVideoRegex);
+        if (genMatches) {
+            for (let m of genMatches) {
+                if (!m.includes('cinesubz') && !m.includes('zt-links')) {
+                    return m;
                 }
             }
+        }
+
+        // Fallback Cheerio Extraction
+        const $2 = cheerio.load(html2);
+        let finalLink = '';
+        $2('a').each((_, el) => {
+            const href = $2(el).attr('href');
+            if (href && (href.includes('supercloud') || href.includes('.mp4') || href.includes('.mkv'))) {
+                if (!finalLink && href.startsWith('http')) finalLink = href;
+            }
         });
 
-        return directVideoLink || csPlayerLink;
-    } catch {
+        return finalLink || csPlayerUrl;
+
+    } catch (err) {
         return initialUrl;
     }
 }
+
+fastify.get('/', async () => {
+    return { status: true, message: 'CineSubz API is running successfully!' };
+});
 
 // Search Endpoint
 fastify.get('/api/search', async (request, reply) => {
@@ -149,13 +160,14 @@ fastify.get('/api/movie', async (request, reply) => {
         const { data } = await axios.get(movieUrl, { headers, timeout: 15000 });
         const $ = cheerio.load(data);
 
-        const title = $('h1.entry-title, h1.title-post, h1').first().text().trim();
+        // Fix Movie Title Extraction
+        let title = $('h1.entry-title, h1.title-post, .entry-header h1').first().text().trim();
+        if (!title || /direct & telegram/i.test(title)) {
+            title = $('meta[property="og:title"]').attr('content') \vert{}\vert{} $('title').text().replace(/ - CineSubz.*/i, '').trim();
+        }
+
         const posterEl = $('.poster img, .entry-content img, .post-thumbnail img, img[class*="poster"]').first();
-        
-        let poster = posterEl.attr('src');
-        if (!poster) poster = posterEl.attr('data-src');
-        if (!poster) poster = posterEl.attr('data-lazy-src');
-        if (!poster) poster = '';
+        let poster = posterEl.attr('src') || posterEl.attr('data-src') || posterEl.attr('data-lazy-src') || '';
 
         const rawLinks = [];
 
@@ -199,7 +211,7 @@ fastify.get('/api/movie', async (request, reply) => {
             }
         });
 
-        // Resolve intermediate pages automatically to direct MP4 links
+        // Resolve intermediate pages using raw HTML regex scraper
         const resolvedLinks = await Promise.all(
             rawLinks.map(async (item) => {
                 const finalUrl = await resolveFinalDirectLink(item.link);
