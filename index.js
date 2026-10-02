@@ -761,91 +761,73 @@ fastify.get('/api/tv/episode', async (request, reply) => {
         }
 
         // ----------------------------------------------------
-// Episode number
-// ----------------------------------------------------
-
-let season = null;
-let episode = null;
-
-let epMatch = episodeUrl.match(
-    /[-_]s0*(\d{1,2})[-_]?e0*(\d{1,3})(?:[-_/?#]|$)/i
-);
-
-if (epMatch) {
-    season = parseInt(epMatch[1], 10);
-    episode = parseInt(epMatch[2], 10);
-}
-
-if (!epMatch) {
-    epMatch = episodeUrl.match(
-        /[-_]0*(\d{1,2})x0*(\d{1,3})(?:[-_/?#]|$)/i
-    );
-
-    if (epMatch) {
-        season = parseInt(epMatch[1], 10);
-        episode = parseInt(epMatch[2], 10);
-    }
-}
-
-// ----------------------------------------------------
 // Episode title
+// Get ONLY the actual episode title
+// Example:
+// 1×8 The Pointy End
+// -> The Pointy End
 // ----------------------------------------------------
 
 let episodeTitle = '';
 
-// Current CineSubz page එකේ direct format:
-//
-// Episode Title:The Pointy End
-//
-// ඒකෙන් title එක විතරක් ගන්නවා.
-const bodyText = cleanText(
-    $('body').text()
+const bodyText = cleanText($('body').text());
+
+// First try: "Episode Title: The Pointy End"
+const explicitTitleMatch = bodyText.match(
+    /Episode\s*Title\s*:\s*(.+?)(?=\s*$|\s*Season\s+\d+|\s*Game\s+of\s+Thrones\s*:\s*\d+[×x]\d+)/i
 );
 
-const episodeTitleMatch = bodyText.match(
-    /Episode\s*Title\s*:\s*(.+?)(?=\s*(?:$|Episode\s*\d+|Season\s*\d+|Serie\s*:|Year\s*:))/i
-);
-
-if (episodeTitleMatch) {
-    episodeTitle = cleanText(episodeTitleMatch[1]);
+if (explicitTitleMatch) {
+    episodeTitle = cleanText(explicitTitleMatch[1]);
 }
 
-// ----------------------------------------------------
-// Fallback selectors
-// ----------------------------------------------------
-
+// Second try:
+// "1×8 The Pointy End Serie:Game of Thrones"
 if (!episodeTitle) {
-    const episodeTitleSelectors = [
-        '.episodetitle',
-        '.episode-title',
-        '.episode-title h1',
-        '.episode-title h2'
-    ];
+    const match = bodyText.match(
+        /\b\d{1,2}\s*[×x]\s*\d{1,3}\s+(.+?)\s+Serie\s*:/i
+    );
 
-    for (const selector of episodeTitleSelectors) {
-        const value = cleanText(
-            $(selector).first().text()
-        );
-
-        if (
-            value &&
-            value.length < 200 &&
-            !/download links?|facebook|twitter|comments|cinesubz|telegram|privacy policy/i.test(value)
-        ) {
-            episodeTitle = value;
-            break;
-        }
+    if (match) {
+        episodeTitle = cleanText(match[1]);
     }
 }
 
-// ----------------------------------------------------
-// Final fallback
-// ----------------------------------------------------
-
+// Third try:
+// Extract from "Now Playing : Game of Thrones: 1×8 ..."
+// by using the episode list title if available.
 if (!episodeTitle) {
-    episodeTitle = episode !== null
-        ? `Episode ${String(episode).padStart(2, '0')}`
-        : 'Episode';
+    $('a[href*="/episodes/"]').each((_, el) => {
+        if (episodeTitle) return;
+
+        const text = cleanText($(el).text());
+
+        if (!text) return;
+
+        // Remove episode number
+        let value = text.replace(
+            /^\d{1,3}\s+/,
+            ''
+        ).trim();
+
+        // Remove date
+        value = value.replace(
+            /\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+\d{1,2},\s+\d{4}\s*$/i,
+            ''
+        ).trim();
+
+        if (
+            value &&
+            !/direct|download|server|player|season|next|prev|now playing/i.test(value)
+        ) {
+            episodeTitle = value;
+        }
+    });
+}
+
+// Final fallback
+if (!episodeTitle) {
+    episodeTitle = 'Episode';
 }
 
         // ----------------------------------------------------
