@@ -243,6 +243,45 @@ async function resolveFinalDirectLink(initialUrl) {
 }
 // <<CSPLAYER-END>>
 
+// ============================================================
+// TV SHOW HELPERS
+// ============================================================
+
+function absoluteUrl(href, baseUrl) {
+    try {
+        return new URL(String(href || '').trim(), baseUrl).href;
+    } catch {
+        return null;
+    }
+}
+
+function cleanText(value = '') {
+    return String(value).replace(/\s+/g, ' ').trim();
+}
+
+function extractImage($, root) {
+    const img = $(root).find('img').first();
+
+    return (
+        img.attr('src') ||
+        img.attr('data-src') ||
+        img.attr('data-lazy-src') ||
+        ''
+    );
+}
+
+function isTvShowUrl(url) {
+    return /\/tvshows\//i.test(String(url || ''));
+}
+
+function isSeasonUrl(url) {
+    return /\/tvshows\/.+\/Season\d+/i.test(String(url || ''));
+}
+
+function isEpisodeUrl(url) {
+    return /\/episodes\//i.test(String(url || ''));
+}
+
 // Search Endpoint
 fastify.get('/api/search', async (request, reply) => {
     try {
@@ -283,6 +322,674 @@ fastify.get('/api/search', async (request, reply) => {
         return { status: true, count: results.length, result: results };
     } catch (err) {
         return reply.status(500).send({ status: false, error: err.message });
+    }
+});
+
+// ============================================================
+// TV SHOW DETAILS
+// TV Show page -> Seasons
+// ============================================================
+
+fastify.get('/api/tv', async (request, reply) => {
+    try {
+        const tvUrl = request.query.url;
+
+        if (!tvUrl) {
+            return reply.status(400).send({
+                status: false,
+                error: 'URL required'
+            });
+        }
+
+        if (!/\/tvshows\//i.test(tvUrl)) {
+            return reply.status(400).send({
+                status: false,
+                error: 'Invalid TV Show URL'
+            });
+        }
+
+        const response = await axios.get(tvUrl, {
+            headers,
+            timeout: 15000,
+            maxRedirects: 10
+        });
+
+        const $ = cheerio.load(response.data);
+
+        // ----------------------------------------------------
+        // Canonical URL after redirects
+        // cinesubz.co -> cinesubz.net වගේ redirect එකක් තිබුණොත්
+        // final URL එක භාවිතා කරනවා.
+        // ----------------------------------------------------
+
+        let pageUrl = tvUrl;
+
+        try {
+            const finalUrl = response.request?.res?.responseUrl;
+
+            if (finalUrl && /^https?:\/\//i.test(finalUrl)) {
+                pageUrl = finalUrl;
+            }
+        } catch {}
+
+        pageUrl = pageUrl.replace(/\/+$/, '');
+
+        // ----------------------------------------------------
+        // TITLE
+        // ----------------------------------------------------
+
+        let title = $(
+            'h1.entry-title, h1.title-post, h1'
+        ).first().text().trim();
+
+        if (!title || /download links?/i.test(title)) {
+            title =
+                $('meta[property="og:title"]').attr('content') ||
+                $('title').text() ||
+                '';
+
+            title = title
+                .replace(/\s*[|–-]\s*cine\s*subz.*$/i, '')
+                .trim();
+        }
+
+        title = title.replace(/\s+/g, ' ').trim();
+
+        // ----------------------------------------------------
+        // POSTER
+        // ----------------------------------------------------
+
+        const posterEl = $(
+            '.poster img, ' +
+            '.entry-content img, ' +
+            '.post-thumbnail img, ' +
+            'img[class*="poster"]'
+        ).first();
+
+        let poster =
+            posterEl.attr('src') ||
+            posterEl.attr('data-src') ||
+            posterEl.attr('data-lazy-src') ||
+            '';
+
+        if (poster) {
+            try {
+                poster = new URL(poster, pageUrl).href;
+            } catch {}
+        }
+
+        // ----------------------------------------------------
+        // SEASONS
+        //
+        // IMPORTANT:
+        // CineSubz current TV page එකේ Season buttons වලට
+        // direct href එකක් නැති නිසා text එකෙන් season number
+        // අරගෙන:
+        //
+        // /tvshows/.../Season01
+        // /tvshows/.../Season02
+        //
+        // generate කරනවා.
+        // ----------------------------------------------------
+
+        const seasonNumbers = new Set();
+
+        // 1. Season button text
+        $('button, a, [class*="season"], [id*="season"]').each((_, el) => {
+            const text = $(el).text().replace(/\s+/g, ' ').trim();
+
+            const matches = [
+                ...text.matchAll(/\bSeason\s*0*(\d{1,2})\b/gi)
+            ];
+
+            for (const match of matches) {
+                seasonNumbers.add(parseInt(match[1], 10));
+            }
+
+            // data attributes තිබුණොත් ඒවත් බලනවා
+            for (const attr of [
+                'data-season',
+                'data-season-number',
+                'data-season-id'
+            ]) {
+                const value = $(el).attr(attr);
+
+                if (value && /^\d+$/.test(value)) {
+                    seasonNumbers.add(parseInt(value, 10));
+                }
+            }
+        });
+
+        // 2. Page text එකෙන් fallback ලෙස seasons හොයනවා
+        const bodyText = $('body')
+            .text()
+            .replace(/\s+/g, ' ');
+
+        for (const match of bodyText.matchAll(
+            /\bSeason\s*0*(\d{1,2})\b/gi
+        )) {
+            seasonNumbers.add(
+                parseInt(match[1], 10)
+            );
+        }
+
+        // ----------------------------------------------------
+        // BUILD SEASON URLS
+        // ----------------------------------------------------
+
+        const seasons = [...seasonNumbers]
+            .filter(n => n >= 1 && n <= 100)
+            .sort((a, b) => a - b)
+            .map(number => ({
+                season: number,
+                title: `Season ${String(number).padStart(2, '0')}`,
+                link: `${pageUrl}/Season${String(number).padStart(2, '0')}`
+            }));
+
+        return {
+            status: true,
+            result: {
+                title,
+                poster,
+                seasons
+            }
+        };
+
+    } catch (err) {
+        console.error(
+            'TV Details Error:',
+            err.message
+        );
+
+        return reply.status(500).send({
+            status: false,
+            error: err.message
+        });
+    }
+});
+
+// ============================================================
+// TV SEASON
+// Season page -> Only that season's episodes
+// ============================================================
+
+fastify.get('/api/tv/season', async (request, reply) => {
+    try {
+        const seasonUrl = request.query.url;
+
+        if (!seasonUrl) {
+            return reply.status(400).send({
+                status: false,
+                error: 'URL required'
+            });
+        }
+
+        if (!/\/tvshows\/.+\/Season\d+/i.test(seasonUrl)) {
+            return reply.status(400).send({
+                status: false,
+                error: 'Invalid Season URL'
+            });
+        }
+
+        // Requested season number
+        const seasonMatch = seasonUrl.match(/\/Season0*(\d+)(?:\/)?$/i);
+
+        if (!seasonMatch) {
+            return reply.status(400).send({
+                status: false,
+                error: 'Season number not found'
+            });
+        }
+
+        const requestedSeason = parseInt(seasonMatch[1], 10);
+
+        const response = await axios.get(seasonUrl, {
+            headers,
+            timeout: 15000,
+            maxRedirects: 10
+        });
+
+        const $ = cheerio.load(response.data);
+
+        // --------------------------------------------------------
+        // Title
+        // --------------------------------------------------------
+
+        let title = $('h1.entry-title, h1.title-post, h1')
+            .first()
+            .text()
+            .trim();
+
+        if (!title || /download links?/i.test(title)) {
+            title =
+                $('meta[property="og:title"]').attr('content') ||
+                $('title').text() ||
+                '';
+        }
+
+        title = title
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        // --------------------------------------------------------
+        // Find episodes
+        // --------------------------------------------------------
+
+        const episodes = [];
+        const seen = new Set();
+
+        $('a[href*="/episodes/"]').each((_, el) => {
+            const href = $(el).attr('href');
+
+            if (!href) return;
+
+            let link;
+
+            try {
+                link = new URL(href, seasonUrl).href;
+            } catch {
+                return;
+            }
+
+            // ----------------------------------------------------
+            // Detect season + episode from URL
+            //
+            // game-of-thrones-1x3
+            // game-of-thrones-2x10
+            // game-of-thrones-s01-e01
+            // ----------------------------------------------------
+
+            let episodeSeason = null;
+            let episodeNumber = null;
+
+            let match = link.match(
+                /[-_/]s0*(\d{1,2})[-_]?e0*(\d{1,3})(?:[-_/]|$)/i
+            );
+
+            if (match) {
+                episodeSeason = parseInt(match[1], 10);
+                episodeNumber = parseInt(match[2], 10);
+            }
+
+            if (!match) {
+                match = link.match(
+                    /[-_/]0*(\d{1,2})x0*(\d{1,3})(?:[-_/]|$)/i
+                );
+
+                if (match) {
+                    episodeSeason = parseInt(match[1], 10);
+                    episodeNumber = parseInt(match[2], 10);
+                }
+            }
+
+            // Could not detect episode
+            if (
+                episodeSeason === null ||
+                episodeNumber === null
+            ) {
+                return;
+            }
+
+            // ----------------------------------------------------
+            // IMPORTANT:
+            // Only return requested season
+            // ----------------------------------------------------
+
+            if (episodeSeason !== requestedSeason) {
+                return;
+            }
+
+            // Prevent duplicates
+            if (seen.has(link)) return;
+            seen.add(link);
+
+            let episodeTitle = $(el)
+                .text()
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            // Remove leading episode number
+            episodeTitle = episodeTitle
+                .replace(
+                    new RegExp(
+                        `^${episodeNumber}\\s*`,
+                        'i'
+                    ),
+                    ''
+                )
+                .trim();
+
+            // Remove date at the end
+            episodeTitle = episodeTitle
+                .replace(
+                    /\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+\d{1,2},\s+\d{4}\s*$/i,
+                    ''
+                )
+                .trim();
+
+            if (!episodeTitle) {
+                episodeTitle = `Episode ${String(episodeNumber).padStart(2, '0')}`;
+            }
+
+            episodes.push({
+                season: episodeSeason,
+                episode: episodeNumber,
+                title: episodeTitle,
+                link
+            });
+        });
+
+        // --------------------------------------------------------
+        // Sort episodes
+        // --------------------------------------------------------
+
+        episodes.sort(
+            (a, b) => a.episode - b.episode
+        );
+
+        return {
+            status: true,
+            result: {
+                title,
+                season: requestedSeason,
+                episodes
+            }
+        };
+
+    } catch (err) {
+        console.error(
+            'TV Season Error:',
+            err.message
+        );
+
+        return reply.status(500).send({
+            status: false,
+            error: err.message
+        });
+    }
+});
+
+// ============================================================
+// TV EPISODE
+// Episode page -> Quality -> Direct Links
+//
+// Example:
+// /api/tv/episode?url=https://cinesubz.co/episodes/game-of-thrones-s01-e01/
+// ============================================================
+
+fastify.get('/api/tv/episode', async (request, reply) => {
+    try {
+        const episodeUrl = request.query.url;
+
+        if (!episodeUrl) {
+            return reply.status(400).send({
+                status: false,
+                error: 'URL required'
+            });
+        }
+
+        if (!isEpisodeUrl(episodeUrl)) {
+            return reply.status(400).send({
+                status: false,
+                error: 'Invalid Episode URL'
+            });
+        }
+
+        const { data } = await axios.get(episodeUrl, {
+            headers,
+            timeout: 15000
+        });
+
+        const $ = cheerio.load(data);
+
+        // ----------------------------------------------------
+        // Title
+        // ----------------------------------------------------
+
+        let title =
+            $('h1.entry-title, h1.title-post, h1').first().text().trim();
+
+        if (!title || /download links?/i.test(title)) {
+            title =
+                $('meta[property="og:title"]').attr('content') ||
+                $('title').text() ||
+                '';
+
+            title = title
+                .replace(/\s*[|–-]\s*cine\s*subz.*$/i, '')
+                .trim();
+        }
+
+        // ----------------------------------------------------
+// Episode title
+// Get ONLY the actual episode title
+// Example:
+// 1×8 The Pointy End
+// -> The Pointy End
+// ----------------------------------------------------
+
+let episodeTitle = '';
+
+const bodyText = cleanText($('body').text());
+
+// First try: "Episode Title: The Pointy End"
+const explicitTitleMatch = bodyText.match(
+    /Episode\s*Title\s*:\s*(.+?)(?=\s*$|\s*Season\s+\d+|\s*Game\s+of\s+Thrones\s*:\s*\d+[×x]\d+)/i
+);
+
+if (explicitTitleMatch) {
+    episodeTitle = cleanText(explicitTitleMatch[1]);
+}
+
+// Second try:
+// "1×8 The Pointy End Serie:Game of Thrones"
+if (!episodeTitle) {
+    const match = bodyText.match(
+        /\b\d{1,2}\s*[×x]\s*\d{1,3}\s+(.+?)\s+Serie\s*:/i
+    );
+
+    if (match) {
+        episodeTitle = cleanText(match[1]);
+    }
+}
+
+// Third try:
+// Extract from "Now Playing : Game of Thrones: 1×8 ..."
+// by using the episode list title if available.
+if (!episodeTitle) {
+    $('a[href*="/episodes/"]').each((_, el) => {
+        if (episodeTitle) return;
+
+        const text = cleanText($(el).text());
+
+        if (!text) return;
+
+        // Remove episode number
+        let value = text.replace(
+            /^\d{1,3}\s+/,
+            ''
+        ).trim();
+
+        // Remove date
+        value = value.replace(
+            /\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+\d{1,2},\s+\d{4}\s*$/i,
+            ''
+        ).trim();
+
+        if (
+            value &&
+            !/direct|download|server|player|season|next|prev|now playing/i.test(value)
+        ) {
+            episodeTitle = value;
+        }
+    });
+}
+
+// Final fallback
+if (!episodeTitle) {
+    episodeTitle = 'Episode';
+}
+
+        // ----------------------------------------------------
+        // Episode number
+        // ----------------------------------------------------
+
+        const epMatch = episodeUrl.match(/-s(\d+)-e(\d+)/i);
+
+        const season = epMatch ? parseInt(epMatch[1], 10) : null;
+        const episode = epMatch ? parseInt(epMatch[2], 10) : null;
+
+        // ----------------------------------------------------
+        // Poster
+        // ----------------------------------------------------
+
+        const poster = extractImage(
+            $,
+            '.poster, .entry-content, .post-thumbnail, article'
+        );
+
+        // ----------------------------------------------------
+        // Download links
+        // ----------------------------------------------------
+
+        const rawLinks = [];
+
+        $('a[href]').each((_, el) => {
+            const href = $(el).attr('href');
+
+            if (!href || !/^https?:\/\//i.test(href)) return;
+
+            const text = cleanText($(el).text());
+
+            const parentText = cleanText(
+                $(el)
+                    .closest('div, p, li, tr, td, article')
+                    .text()
+            );
+
+            const combinedText = `${text} ${parentText}`;
+
+            // Social / navigation links ignore
+            if (
+                /facebook|twitter|whatsapp|pinterest|tumblr|telegram\.me|t\.me\/share/i.test(href) ||
+                /\/category\/|\/genre\/|\/tag\/|\/actor\/|\/director\/|\/author\/|\/year\/|\/quality\/|\/languages\//i.test(href)
+            ) {
+                return;
+            }
+
+            const hasResolution =
+                /(480p|720p|1080p|2160p|4k)/i.test(combinedText);
+
+            const isDownloadPath =
+                /zt-links|csplayer|pixeldrain|mega\.nz|mediafire|gofile|drive\.google|\/download\/|\/links\/|\/api-/i.test(href);
+
+            if (!hasResolution && !isDownloadPath) return;
+
+            const resMatch =
+                combinedText.match(/(480p|720p|1080p|2160p|4k)/i);
+
+            const typeMatch =
+                combinedText.match(/(WEB-DL|WEBRip|HDRip|BDRip|Bluray|HDTV)/i);
+
+            const sizeMatch =
+                combinedText.match(/(\d+(?:\.\d+)?\s*(?:MB|GB))/i);
+
+            let quality = '';
+
+            if (resMatch) {
+                const res = resMatch[0].toUpperCase();
+                const type = typeMatch
+                    ? `${typeMatch[0].toUpperCase()} `
+                    : '';
+
+                const size = sizeMatch
+                    ? ` - ${sizeMatch[0].toUpperCase()}`
+                    : '';
+
+                quality = `${type}${res}${size}`.trim();
+            } else if (
+                text &&
+                text.length > 2 &&
+                text.length < 80 &&
+                !/direct & telegram/i.test(text)
+            ) {
+                quality = text;
+            } else {
+                quality = 'Download Link';
+            }
+
+            if (!rawLinks.some(x => x.link === href)) {
+                rawLinks.push({
+                    quality,
+                    link: href
+                });
+            }
+        });
+
+        // ----------------------------------------------------
+        // Resolve links using existing movie resolver
+        // ----------------------------------------------------
+
+        const resolvedLinks = await Promise.all(
+            rawLinks.map(async item => {
+                const resolved = await resolveFinalDirectLink(item.link);
+
+                return {
+                    quality: item.quality,
+                    ...resolved
+                };
+            })
+        );
+
+        // ----------------------------------------------------
+        // Keep duplicate quality links as fallback options
+        // ----------------------------------------------------
+
+        const cleanedLinks = [];
+        const seenQualities = new Map();
+
+        for (const item of resolvedLinks) {
+            const baseQuality = item.quality || 'Download Link';
+
+            if (!seenQualities.has(baseQuality)) {
+                seenQualities.set(baseQuality, 1);
+
+                cleanedLinks.push({
+                    ...item,
+                    quality: baseQuality
+                });
+            } else {
+                const count =
+                    seenQualities.get(baseQuality) + 1;
+
+                seenQualities.set(baseQuality, count);
+
+                cleanedLinks.push({
+                    ...item,
+                    quality: `${baseQuality} (Option ${count})`
+                });
+            }
+        }
+
+        return {
+            status: true,
+            result: {
+                title: cleanText(title),
+                episodeTitle,
+                season,
+                episode,
+                poster,
+                dl_links: cleanedLinks
+            }
+        };
+
+    } catch (err) {
+        console.error('TV Episode Error:', err.message);
+
+        return reply.status(500).send({
+            status: false,
+            error: err.message
+        });
     }
 });
 
