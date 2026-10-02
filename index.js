@@ -761,55 +761,80 @@ fastify.get('/api/tv/episode', async (request, reply) => {
         }
 
         // ----------------------------------------------------
+// Episode number
+// ----------------------------------------------------
+
+let season = null;
+let episode = null;
+
+let epMatch = episodeUrl.match(
+    /[-_]s0*(\d{1,2})[-_]?e0*(\d{1,3})(?:[-_/?#]|$)/i
+);
+
+if (epMatch) {
+    season = parseInt(epMatch[1], 10);
+    episode = parseInt(epMatch[2], 10);
+}
+
+if (!epMatch) {
+    epMatch = episodeUrl.match(
+        /[-_]0*(\d{1,2})x0*(\d{1,3})(?:[-_/?#]|$)/i
+    );
+
+    if (epMatch) {
+        season = parseInt(epMatch[1], 10);
+        episode = parseInt(epMatch[2], 10);
+    }
+}
+
+// ----------------------------------------------------
 // Episode title
 // ----------------------------------------------------
 
 let episodeTitle = '';
 
-const episodeTitleSelectors = [
-    '.episodetitle',
-    '.episode-title',
-    '.episode-title h1',
-    '.episode-title h2',
-    '.entry-title',
-    '.entry-header h1'
-];
+// Current CineSubz page එකේ direct format:
+//
+// Episode Title:The Pointy End
+//
+// ඒකෙන් title එක විතරක් ගන්නවා.
+const bodyText = cleanText(
+    $('body').text()
+);
 
-for (const selector of episodeTitleSelectors) {
-    const value = cleanText(
-        $(selector).first().text()
-    );
+const episodeTitleMatch = bodyText.match(
+    /Episode\s*Title\s*:\s*(.+?)(?=\s*(?:$|Episode\s*\d+|Season\s*\d+|Serie\s*:|Year\s*:))/i
+);
 
-    if (
-        value &&
-        value.length < 200 &&
-        !/download links?|facebook|twitter|comments|cinesubz|telegram|privacy policy/i.test(value)
-    ) {
-        episodeTitle = value;
-        break;
-    }
+if (episodeTitleMatch) {
+    episodeTitle = cleanText(episodeTitleMatch[1]);
 }
 
 // ----------------------------------------------------
-// Fallback:
-// Current CineSubz page contains something like:
-//
-// 1×1 Winter Is Coming Serie:Game of Thrones Year:2011
-//
-// Extract only the text between episode number and "Serie:"
+// Fallback selectors
 // ----------------------------------------------------
 
 if (!episodeTitle) {
-    const bodyText = cleanText(
-        $('body').text()
-    );
+    const episodeTitleSelectors = [
+        '.episodetitle',
+        '.episode-title',
+        '.episode-title h1',
+        '.episode-title h2'
+    ];
 
-    const match = bodyText.match(
-        /\b\d{1,2}×\d{1,3}\s+(.+?)\s+Serie\s*:/i
-    );
+    for (const selector of episodeTitleSelectors) {
+        const value = cleanText(
+            $(selector).first().text()
+        );
 
-    if (match) {
-        episodeTitle = cleanText(match[1]);
+        if (
+            value &&
+            value.length < 200 &&
+            !/download links?|facebook|twitter|comments|cinesubz|telegram|privacy policy/i.test(value)
+        ) {
+            episodeTitle = value;
+            break;
+        }
     }
 }
 
