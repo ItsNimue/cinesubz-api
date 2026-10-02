@@ -243,6 +243,45 @@ async function resolveFinalDirectLink(initialUrl) {
 }
 // <<CSPLAYER-END>>
 
+// ============================================================
+// TV SHOW HELPERS
+// ============================================================
+
+function absoluteUrl(href, baseUrl) {
+    try {
+        return new URL(String(href || '').trim(), baseUrl).href;
+    } catch {
+        return null;
+    }
+}
+
+function cleanText(value = '') {
+    return String(value).replace(/\s+/g, ' ').trim();
+}
+
+function extractImage($, root) {
+    const img = $(root).find('img').first();
+
+    return (
+        img.attr('src') ||
+        img.attr('data-src') ||
+        img.attr('data-lazy-src') ||
+        ''
+    );
+}
+
+function isTvShowUrl(url) {
+    return /\/tvshows\//i.test(String(url || ''));
+}
+
+function isSeasonUrl(url) {
+    return /\/tvshows\/.+\/Season\d+/i.test(String(url || ''));
+}
+
+function isEpisodeUrl(url) {
+    return /\/episodes\//i.test(String(url || ''));
+}
+
 // Search Endpoint
 fastify.get('/api/search', async (request, reply) => {
     try {
@@ -283,6 +322,421 @@ fastify.get('/api/search', async (request, reply) => {
         return { status: true, count: results.length, result: results };
     } catch (err) {
         return reply.status(500).send({ status: false, error: err.message });
+    }
+});
+
+// ============================================================
+// TV SHOW DETAILS
+// TV Show page -> Seasons
+//
+// Example:
+// /api/tv?url=https://cinesubz.co/tvshows/game-of-thrones-2011-sinhala-subtitles/
+// ============================================================
+
+fastify.get('/api/tv', async (request, reply) => {
+    try {
+        const tvUrl = request.query.url;
+
+        if (!tvUrl) {
+            return reply.status(400).send({
+                status: false,
+                error: 'URL required'
+            });
+        }
+
+        if (!isTvShowUrl(tvUrl)) {
+            return reply.status(400).send({
+                status: false,
+                error: 'Invalid TV Show URL'
+            });
+        }
+
+        const { data } = await axios.get(tvUrl, {
+            headers,
+            timeout: 15000
+        });
+
+        const $ = cheerio.load(data);
+
+        let title =
+            $('h1.entry-title, h1.title-post, h1').first().text().trim();
+
+        if (!title || /download links?/i.test(title)) {
+            title =
+                $('meta[property="og:title"]').attr('content') ||
+                $('title').text() ||
+                '';
+
+            title = title
+                .replace(/\s*[|–-]\s*cine\s*subz.*$/i, '')
+                .trim();
+        }
+
+        const poster = extractImage(
+            $,
+            '.poster, .entry-content, .post-thumbnail, article'
+        );
+
+        const seasons = [];
+
+        $('a[href]').each((_, el) => {
+            const href = $(el).attr('href');
+            const url = absoluteUrl(href, tvUrl);
+
+            if (!url || !isSeasonUrl(url)) return;
+
+            const text = cleanText($(el).text());
+
+            if (!seasons.some(s => s.link === url)) {
+                const match = url.match(/Season(\d+)/i);
+
+                seasons.push({
+                    season: match ? parseInt(match[1], 10) : null,
+                    title: text || `Season ${match ? match[1] : ''}`.trim(),
+                    link: url
+                });
+            }
+        });
+
+        seasons.sort((a, b) => {
+            return (a.season || 999) - (b.season || 999);
+        });
+
+        return {
+            status: true,
+            result: {
+                title: cleanText(title),
+                poster,
+                seasons
+            }
+        };
+
+    } catch (err) {
+        console.error('TV Details Error:', err.message);
+
+        return reply.status(500).send({
+            status: false,
+            error: err.message
+        });
+    }
+});
+
+// ============================================================
+// TV SEASON
+// Season page -> Episodes
+//
+// Example:
+// /api/tv/season?url=https://cinesubz.co/tvshows/.../Season01
+// ============================================================
+
+fastify.get('/api/tv/season', async (request, reply) => {
+    try {
+        const seasonUrl = request.query.url;
+
+        if (!seasonUrl) {
+            return reply.status(400).send({
+                status: false,
+                error: 'URL required'
+            });
+        }
+
+        if (!isSeasonUrl(seasonUrl)) {
+            return reply.status(400).send({
+                status: false,
+                error: 'Invalid Season URL'
+            });
+        }
+
+        const { data } = await axios.get(seasonUrl, {
+            headers,
+            timeout: 15000
+        });
+
+        const $ = cheerio.load(data);
+
+        let title =
+            $('h1.entry-title, h1.title-post, h1').first().text().trim();
+
+        if (!title) {
+            title =
+                $('meta[property="og:title"]').attr('content') ||
+                $('title').text() ||
+                '';
+        }
+
+        const episodes = [];
+
+        $('a[href]').each((_, el) => {
+            const href = $(el).attr('href');
+            const url = absoluteUrl(href, seasonUrl);
+
+            if (!url || !isEpisodeUrl(url)) return;
+
+            const text = cleanText($(el).text());
+
+            const epMatch = url.match(/-s(\d+)-e(\d+)/i);
+
+            if (!episodes.some(e => e.link === url)) {
+                episodes.push({
+                    season: epMatch ? parseInt(epMatch[1], 10) : null,
+                    episode: epMatch ? parseInt(epMatch[2], 10) : null,
+                    title: text || `Episode ${epMatch ? epMatch[2] : ''}`.trim(),
+                    link: url
+                });
+            }
+        });
+
+        episodes.sort((a, b) => {
+            if ((a.season || 0) !== (b.season || 0)) {
+                return (a.season || 0) - (b.season || 0);
+            }
+
+            return (a.episode || 0) - (b.episode || 0);
+        });
+
+        return {
+            status: true,
+            result: {
+                title: cleanText(title),
+                episodes
+            }
+        };
+
+    } catch (err) {
+        console.error('TV Season Error:', err.message);
+
+        return reply.status(500).send({
+            status: false,
+            error: err.message
+        });
+    }
+});
+
+// ============================================================
+// TV EPISODE
+// Episode page -> Quality -> Direct Links
+//
+// Example:
+// /api/tv/episode?url=https://cinesubz.co/episodes/game-of-thrones-s01-e01/
+// ============================================================
+
+fastify.get('/api/tv/episode', async (request, reply) => {
+    try {
+        const episodeUrl = request.query.url;
+
+        if (!episodeUrl) {
+            return reply.status(400).send({
+                status: false,
+                error: 'URL required'
+            });
+        }
+
+        if (!isEpisodeUrl(episodeUrl)) {
+            return reply.status(400).send({
+                status: false,
+                error: 'Invalid Episode URL'
+            });
+        }
+
+        const { data } = await axios.get(episodeUrl, {
+            headers,
+            timeout: 15000
+        });
+
+        const $ = cheerio.load(data);
+
+        // ----------------------------------------------------
+        // Title
+        // ----------------------------------------------------
+
+        let title =
+            $('h1.entry-title, h1.title-post, h1').first().text().trim();
+
+        if (!title || /download links?/i.test(title)) {
+            title =
+                $('meta[property="og:title"]').attr('content') ||
+                $('title').text() ||
+                '';
+
+            title = title
+                .replace(/\s*[|–-]\s*cine\s*subz.*$/i, '')
+                .trim();
+        }
+
+        // ----------------------------------------------------
+        // Episode title
+        // ----------------------------------------------------
+
+        let episodeTitle = '';
+
+        const episodeTitleText = $('body')
+            .text()
+            .match(/Episode\s*Title\s*:\s*([^\n\r]+)/i);
+
+        if (episodeTitleText) {
+            episodeTitle = cleanText(episodeTitleText[1]);
+        }
+
+        // ----------------------------------------------------
+        // Episode number
+        // ----------------------------------------------------
+
+        const epMatch = episodeUrl.match(/-s(\d+)-e(\d+)/i);
+
+        const season = epMatch ? parseInt(epMatch[1], 10) : null;
+        const episode = epMatch ? parseInt(epMatch[2], 10) : null;
+
+        // ----------------------------------------------------
+        // Poster
+        // ----------------------------------------------------
+
+        const poster = extractImage(
+            $,
+            '.poster, .entry-content, .post-thumbnail, article'
+        );
+
+        // ----------------------------------------------------
+        // Download links
+        // ----------------------------------------------------
+
+        const rawLinks = [];
+
+        $('a[href]').each((_, el) => {
+            const href = $(el).attr('href');
+
+            if (!href || !/^https?:\/\//i.test(href)) return;
+
+            const text = cleanText($(el).text());
+
+            const parentText = cleanText(
+                $(el)
+                    .closest('div, p, li, tr, td, article')
+                    .text()
+            );
+
+            const combinedText = `${text} ${parentText}`;
+
+            // Social / navigation links ignore
+            if (
+                /facebook|twitter|whatsapp|pinterest|tumblr|telegram\.me|t\.me\/share/i.test(href) ||
+                /\/category\/|\/genre\/|\/tag\/|\/actor\/|\/director\/|\/author\/|\/year\/|\/quality\/|\/languages\//i.test(href)
+            ) {
+                return;
+            }
+
+            const hasResolution =
+                /(480p|720p|1080p|2160p|4k)/i.test(combinedText);
+
+            const isDownloadPath =
+                /zt-links|csplayer|pixeldrain|mega\.nz|mediafire|gofile|drive\.google|\/download\/|\/links\/|\/api-/i.test(href);
+
+            if (!hasResolution && !isDownloadPath) return;
+
+            const resMatch =
+                combinedText.match(/(480p|720p|1080p|2160p|4k)/i);
+
+            const typeMatch =
+                combinedText.match(/(WEB-DL|WEBRip|HDRip|BDRip|Bluray|HDTV)/i);
+
+            const sizeMatch =
+                combinedText.match(/(\d+(?:\.\d+)?\s*(?:MB|GB))/i);
+
+            let quality = '';
+
+            if (resMatch) {
+                const res = resMatch[0].toUpperCase();
+                const type = typeMatch
+                    ? `${typeMatch[0].toUpperCase()} `
+                    : '';
+
+                const size = sizeMatch
+                    ? ` - ${sizeMatch[0].toUpperCase()}`
+                    : '';
+
+                quality = `${type}${res}${size}`.trim();
+            } else if (
+                text &&
+                text.length > 2 &&
+                text.length < 80 &&
+                !/direct & telegram/i.test(text)
+            ) {
+                quality = text;
+            } else {
+                quality = 'Download Link';
+            }
+
+            if (!rawLinks.some(x => x.link === href)) {
+                rawLinks.push({
+                    quality,
+                    link: href
+                });
+            }
+        });
+
+        // ----------------------------------------------------
+        // Resolve links using existing movie resolver
+        // ----------------------------------------------------
+
+        const resolvedLinks = await Promise.all(
+            rawLinks.map(async item => {
+                const resolved = await resolveFinalDirectLink(item.link);
+
+                return {
+                    quality: item.quality,
+                    ...resolved
+                };
+            })
+        );
+
+        // ----------------------------------------------------
+        // Keep duplicate quality links as fallback options
+        // ----------------------------------------------------
+
+        const cleanedLinks = [];
+        const seenQualities = new Map();
+
+        for (const item of resolvedLinks) {
+            const baseQuality = item.quality || 'Download Link';
+
+            if (!seenQualities.has(baseQuality)) {
+                seenQualities.set(baseQuality, 1);
+
+                cleanedLinks.push({
+                    ...item,
+                    quality: baseQuality
+                });
+            } else {
+                const count =
+                    seenQualities.get(baseQuality) + 1;
+
+                seenQualities.set(baseQuality, count);
+
+                cleanedLinks.push({
+                    ...item,
+                    quality: `${baseQuality} (Option ${count})`
+                });
+            }
+        }
+
+        return {
+            status: true,
+            result: {
+                title: cleanText(title),
+                episodeTitle,
+                season,
+                episode,
+                poster,
+                dl_links: cleanedLinks
+            }
+        };
+
+    } catch (err) {
+        console.error('TV Episode Error:', err.message);
+
+        return reply.status(500).send({
+            status: false,
+            error: err.message
+        });
     }
 });
 
