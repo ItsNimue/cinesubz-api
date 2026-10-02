@@ -328,9 +328,6 @@ fastify.get('/api/search', async (request, reply) => {
 // ============================================================
 // TV SHOW DETAILS
 // TV Show page -> Seasons
-//
-// Example:
-// /api/tv?url=https://cinesubz.co/tvshows/game-of-thrones-2011-sinhala-subtitles/
 // ============================================================
 
 fastify.get('/api/tv', async (request, reply) => {
@@ -344,22 +341,46 @@ fastify.get('/api/tv', async (request, reply) => {
             });
         }
 
-        if (!isTvShowUrl(tvUrl)) {
+        if (!/\/tvshows\//i.test(tvUrl)) {
             return reply.status(400).send({
                 status: false,
                 error: 'Invalid TV Show URL'
             });
         }
 
-        const { data } = await axios.get(tvUrl, {
+        const response = await axios.get(tvUrl, {
             headers,
-            timeout: 15000
+            timeout: 15000,
+            maxRedirects: 10
         });
 
-        const $ = cheerio.load(data);
+        const $ = cheerio.load(response.data);
 
-        let title =
-            $('h1.entry-title, h1.title-post, h1').first().text().trim();
+        // ----------------------------------------------------
+        // Canonical URL after redirects
+        // cinesubz.co -> cinesubz.net වගේ redirect එකක් තිබුණොත්
+        // final URL එක භාවිතා කරනවා.
+        // ----------------------------------------------------
+
+        let pageUrl = tvUrl;
+
+        try {
+            const finalUrl = response.request?.res?.responseUrl;
+
+            if (finalUrl && /^https?:\/\//i.test(finalUrl)) {
+                pageUrl = finalUrl;
+            }
+        } catch {}
+
+        pageUrl = pageUrl.replace(/\/+$/, '');
+
+        // ----------------------------------------------------
+        // TITLE
+        // ----------------------------------------------------
+
+        let title = $(
+            'h1.entry-title, h1.title-post, h1'
+        ).first().text().trim();
 
         if (!title || /download links?/i.test(title)) {
             title =
@@ -372,47 +393,113 @@ fastify.get('/api/tv', async (request, reply) => {
                 .trim();
         }
 
-        const poster = extractImage(
-            $,
-            '.poster, .entry-content, .post-thumbnail, article'
-        );
+        title = title.replace(/\s+/g, ' ').trim();
 
-        const seasons = [];
+        // ----------------------------------------------------
+        // POSTER
+        // ----------------------------------------------------
 
-        $('a[href]').each((_, el) => {
-            const href = $(el).attr('href');
-            const url = absoluteUrl(href, tvUrl);
+        const posterEl = $(
+            '.poster img, ' +
+            '.entry-content img, ' +
+            '.post-thumbnail img, ' +
+            'img[class*="poster"]'
+        ).first();
 
-            if (!url || !isSeasonUrl(url)) return;
+        let poster =
+            posterEl.attr('src') ||
+            posterEl.attr('data-src') ||
+            posterEl.attr('data-lazy-src') ||
+            '';
 
-            const text = cleanText($(el).text());
+        if (poster) {
+            try {
+                poster = new URL(poster, pageUrl).href;
+            } catch {}
+        }
 
-            if (!seasons.some(s => s.link === url)) {
-                const match = url.match(/Season(\d+)/i);
+        // ----------------------------------------------------
+        // SEASONS
+        //
+        // IMPORTANT:
+        // CineSubz current TV page එකේ Season buttons වලට
+        // direct href එකක් නැති නිසා text එකෙන් season number
+        // අරගෙන:
+        //
+        // /tvshows/.../Season01
+        // /tvshows/.../Season02
+        //
+        // generate කරනවා.
+        // ----------------------------------------------------
 
-                seasons.push({
-                    season: match ? parseInt(match[1], 10) : null,
-                    title: text || `Season ${match ? match[1] : ''}`.trim(),
-                    link: url
-                });
+        const seasonNumbers = new Set();
+
+        // 1. Season button text
+        $('button, a, [class*="season"], [id*="season"]').each((_, el) => {
+            const text = $(el).text().replace(/\s+/g, ' ').trim();
+
+            const matches = [
+                ...text.matchAll(/\bSeason\s*0*(\d{1,2})\b/gi)
+            ];
+
+            for (const match of matches) {
+                seasonNumbers.add(parseInt(match[1], 10));
+            }
+
+            // data attributes තිබුණොත් ඒවත් බලනවා
+            for (const attr of [
+                'data-season',
+                'data-season-number',
+                'data-season-id'
+            ]) {
+                const value = $(el).attr(attr);
+
+                if (value && /^\d+$/.test(value)) {
+                    seasonNumbers.add(parseInt(value, 10));
+                }
             }
         });
 
-        seasons.sort((a, b) => {
-            return (a.season || 999) - (b.season || 999);
-        });
+        // 2. Page text එකෙන් fallback ලෙස seasons හොයනවා
+        const bodyText = $('body')
+            .text()
+            .replace(/\s+/g, ' ');
+
+        for (const match of bodyText.matchAll(
+            /\bSeason\s*0*(\d{1,2})\b/gi
+        )) {
+            seasonNumbers.add(
+                parseInt(match[1], 10)
+            );
+        }
+
+        // ----------------------------------------------------
+        // BUILD SEASON URLS
+        // ----------------------------------------------------
+
+        const seasons = [...seasonNumbers]
+            .filter(n => n >= 1 && n <= 100)
+            .sort((a, b) => a - b)
+            .map(number => ({
+                season: number,
+                title: `Season ${String(number).padStart(2, '0')}`,
+                link: `${pageUrl}/Season${String(number).padStart(2, '0')}`
+            }));
 
         return {
             status: true,
             result: {
-                title: cleanText(title),
+                title,
                 poster,
                 seasons
             }
         };
 
     } catch (err) {
-        console.error('TV Details Error:', err.message);
+        console.error(
+            'TV Details Error:',
+            err.message
+        );
 
         return reply.status(500).send({
             status: false,
