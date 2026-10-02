@@ -760,95 +760,28 @@ fastify.get('/api/tv/episode', async (request, reply) => {
                 .trim();
         }
 
-// ----------------------------------------------------
-// Episode title
-// ----------------------------------------------------
+        // ----------------------------------------------------
+        // Episode title
+        // ----------------------------------------------------
 
-let episodeTitle = '';
+        let episodeTitle = '';
 
-const episodeTitleSelectors = [
-    '.episodetitle',
-    '.episode-title',
-    '.episode-title h1',
-    '.episode-title h2',
-    '.entry-title',
-    '.entry-header h1'
-];
+        const episodeTitleText = $('body')
+            .text()
+            .match(/Episode\s*Title\s*:\s*([^\n\r]+)/i);
 
-for (const selector of episodeTitleSelectors) {
-    const value = cleanText(
-        $(selector).first().text()
-    );
-
-    if (
-        value &&
-        value.length < 200 &&
-        !/download links?|facebook|twitter|comments|cinesubz|telegram|privacy policy/i.test(value)
-    ) {
-        episodeTitle = value;
-        break;
-    }
-}
-
-// ----------------------------------------------------
-// Fallback:
-// Current CineSubz page contains something like:
-//
-// 1×1 Winter Is Coming Serie:Game of Thrones Year:2011
-//
-// Extract only the text between episode number and "Serie:"
-// ----------------------------------------------------
-
-if (!episodeTitle) {
-    const bodyText = cleanText(
-        $('body').text()
-    );
-
-    const match = bodyText.match(
-        /\b\d{1,2}×\d{1,3}\s+(.+?)\s+Serie\s*:/i
-    );
-
-    if (match) {
-        episodeTitle = cleanText(match[1]);
-    }
-}
-
-// ----------------------------------------------------
-// Final fallback
-// ----------------------------------------------------
-
-if (!episodeTitle) {
-    episodeTitle = episode !== null
-        ? `Episode ${String(episode).padStart(2, '0')}`
-        : 'Episode';
-}
+        if (episodeTitleText) {
+            episodeTitle = cleanText(episodeTitleText[1]);
+        }
 
         // ----------------------------------------------------
         // Episode number
         // ----------------------------------------------------
 
-        let season = null;
-        let episode = null;
+        const epMatch = episodeUrl.match(/-s(\d+)-e(\d+)/i);
 
-        let epMatch = episodeUrl.match(
-            /[-_]s0*(\d{1,2})[-_]?e0*(\d{1,3})(?:[/?#]|$)/i
-        );
-
-        if (epMatch) {
-            season = parseInt(epMatch[1], 10);
-            episode = parseInt(epMatch[2], 10);
-        }
-
-       if (!epMatch) {
-       epMatch = episodeUrl.match(
-           /[-_]0*(\d{1,2})x0*(\d{1,3})(?:[/?#]|$)/i
-       );
-
-       if (epMatch) {
-           season = parseInt(epMatch[1], 10);
-           episode = parseInt(epMatch[2], 10);
-       }
-   }
+        const season = epMatch ? parseInt(epMatch[1], 10) : null;
+        const episode = epMatch ? parseInt(epMatch[2], 10) : null;
 
         // ----------------------------------------------------
         // Poster
