@@ -510,10 +510,7 @@ fastify.get('/api/tv', async (request, reply) => {
 
 // ============================================================
 // TV SEASON
-// Season page -> Episodes
-//
-// Example:
-// /api/tv/season?url=https://cinesubz.co/tvshows/.../Season01
+// Season page -> Only that season's episodes
 // ============================================================
 
 fastify.get('/api/tv/season', async (request, reply) => {
@@ -527,70 +524,183 @@ fastify.get('/api/tv/season', async (request, reply) => {
             });
         }
 
-        if (!isSeasonUrl(seasonUrl)) {
+        if (!/\/tvshows\/.+\/Season\d+/i.test(seasonUrl)) {
             return reply.status(400).send({
                 status: false,
                 error: 'Invalid Season URL'
             });
         }
 
-        const { data } = await axios.get(seasonUrl, {
+        // Requested season number
+        const seasonMatch = seasonUrl.match(/\/Season0*(\d+)(?:\/)?$/i);
+
+        if (!seasonMatch) {
+            return reply.status(400).send({
+                status: false,
+                error: 'Season number not found'
+            });
+        }
+
+        const requestedSeason = parseInt(seasonMatch[1], 10);
+
+        const response = await axios.get(seasonUrl, {
             headers,
-            timeout: 15000
+            timeout: 15000,
+            maxRedirects: 10
         });
 
-        const $ = cheerio.load(data);
+        const $ = cheerio.load(response.data);
 
-        let title =
-            $('h1.entry-title, h1.title-post, h1').first().text().trim();
+        // --------------------------------------------------------
+        // Title
+        // --------------------------------------------------------
 
-        if (!title) {
+        let title = $('h1.entry-title, h1.title-post, h1')
+            .first()
+            .text()
+            .trim();
+
+        if (!title || /download links?/i.test(title)) {
             title =
                 $('meta[property="og:title"]').attr('content') ||
                 $('title').text() ||
                 '';
         }
 
+        title = title
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        // --------------------------------------------------------
+        // Find episodes
+        // --------------------------------------------------------
+
         const episodes = [];
+        const seen = new Set();
 
-        $('a[href]').each((_, el) => {
+        $('a[href*="/episodes/"]').each((_, el) => {
             const href = $(el).attr('href');
-            const url = absoluteUrl(href, seasonUrl);
 
-            if (!url || !isEpisodeUrl(url)) return;
+            if (!href) return;
 
-            const text = cleanText($(el).text());
+            let link;
 
-            const epMatch = url.match(/-s(\d+)-e(\d+)/i);
-
-            if (!episodes.some(e => e.link === url)) {
-                episodes.push({
-                    season: epMatch ? parseInt(epMatch[1], 10) : null,
-                    episode: epMatch ? parseInt(epMatch[2], 10) : null,
-                    title: text || `Episode ${epMatch ? epMatch[2] : ''}`.trim(),
-                    link: url
-                });
-            }
-        });
-
-        episodes.sort((a, b) => {
-            if ((a.season || 0) !== (b.season || 0)) {
-                return (a.season || 0) - (b.season || 0);
+            try {
+                link = new URL(href, seasonUrl).href;
+            } catch {
+                return;
             }
 
-            return (a.episode || 0) - (b.episode || 0);
+            // ----------------------------------------------------
+            // Detect season + episode from URL
+            //
+            // game-of-thrones-1x3
+            // game-of-thrones-2x10
+            // game-of-thrones-s01-e01
+            // ----------------------------------------------------
+
+            let episodeSeason = null;
+            let episodeNumber = null;
+
+            let match = link.match(
+                /[-_/]s0*(\d{1,2})[-_]?e0*(\d{1,3})(?:[-_/]|$)/i
+            );
+
+            if (match) {
+                episodeSeason = parseInt(match[1], 10);
+                episodeNumber = parseInt(match[2], 10);
+            }
+
+            if (!match) {
+                match = link.match(
+                    /[-_/]0*(\d{1,2})x0*(\d{1,3})(?:[-_/]|$)/i
+                );
+
+                if (match) {
+                    episodeSeason = parseInt(match[1], 10);
+                    episodeNumber = parseInt(match[2], 10);
+                }
+            }
+
+            // Could not detect episode
+            if (
+                episodeSeason === null ||
+                episodeNumber === null
+            ) {
+                return;
+            }
+
+            // ----------------------------------------------------
+            // IMPORTANT:
+            // Only return requested season
+            // ----------------------------------------------------
+
+            if (episodeSeason !== requestedSeason) {
+                return;
+            }
+
+            // Prevent duplicates
+            if (seen.has(link)) return;
+            seen.add(link);
+
+            let episodeTitle = $(el)
+                .text()
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            // Remove leading episode number
+            episodeTitle = episodeTitle
+                .replace(
+                    new RegExp(
+                        `^${episodeNumber}\\s*`,
+                        'i'
+                    ),
+                    ''
+                )
+                .trim();
+
+            // Remove date at the end
+            episodeTitle = episodeTitle
+                .replace(
+                    /\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+\d{1,2},\s+\d{4}\s*$/i,
+                    ''
+                )
+                .trim();
+
+            if (!episodeTitle) {
+                episodeTitle = `Episode ${String(episodeNumber).padStart(2, '0')}`;
+            }
+
+            episodes.push({
+                season: episodeSeason,
+                episode: episodeNumber,
+                title: episodeTitle,
+                link
+            });
         });
+
+        // --------------------------------------------------------
+        // Sort episodes
+        // --------------------------------------------------------
+
+        episodes.sort(
+            (a, b) => a.episode - b.episode
+        );
 
         return {
             status: true,
             result: {
-                title: cleanText(title),
+                title,
+                season: requestedSeason,
                 episodes
             }
         };
 
     } catch (err) {
-        console.error('TV Season Error:', err.message);
+        console.error(
+            'TV Season Error:',
+            err.message
+        );
 
         return reply.status(500).send({
             status: false,
