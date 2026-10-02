@@ -761,18 +761,67 @@ fastify.get('/api/tv/episode', async (request, reply) => {
         }
 
         // ----------------------------------------------------
-        // Episode title
-        // ----------------------------------------------------
+// Episode title
+// ----------------------------------------------------
 
-        let episodeTitle = '';
+let episodeTitle = '';
 
-        const episodeTitleText = $('body')
-            .text()
-            .match(/Episode\s*Title\s*:\s*([^\n\r]+)/i);
+const episodeTitleSelectors = [
+    '.episodetitle',
+    '.episode-title',
+    '.episode-title h1',
+    '.episode-title h2',
+    '.entry-title',
+    '.entry-header h1'
+];
 
-        if (episodeTitleText) {
-            episodeTitle = cleanText(episodeTitleText[1]);
-        }
+for (const selector of episodeTitleSelectors) {
+    const value = cleanText(
+        $(selector).first().text()
+    );
+
+    if (
+        value &&
+        value.length < 200 &&
+        !/download links?|facebook|twitter|comments|cinesubz|telegram|privacy policy/i.test(value)
+    ) {
+        episodeTitle = value;
+        break;
+    }
+}
+
+// ----------------------------------------------------
+// Fallback:
+// Current CineSubz page contains something like:
+//
+// 1×1 Winter Is Coming Serie:Game of Thrones Year:2011
+//
+// Extract only the text between episode number and "Serie:"
+// ----------------------------------------------------
+
+if (!episodeTitle) {
+    const bodyText = cleanText(
+        $('body').text()
+    );
+
+    const match = bodyText.match(
+        /\b\d{1,2}×\d{1,3}\s+(.+?)\s+Serie\s*:/i
+    );
+
+    if (match) {
+        episodeTitle = cleanText(match[1]);
+    }
+}
+
+// ----------------------------------------------------
+// Final fallback
+// ----------------------------------------------------
+
+if (!episodeTitle) {
+    episodeTitle = episode !== null
+        ? `Episode ${String(episode).padStart(2, '0')}`
+        : 'Episode';
+}
 
         // ----------------------------------------------------
         // Episode number
