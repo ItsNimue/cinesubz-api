@@ -379,6 +379,276 @@ fastify.get('/api/movie', async (request, reply) => {
     }
 });
 
+// ============================================================
+// Movie Info Endpoint
+// Movie page එකෙන් information විතරක් ගන්නවා.
+// Download links / resolver logic මේ endpoint එකට සම්බන්ධ නෑ.
+// ============================================================
+
+fastify.get('/api/movie/info', async (request, reply) => {
+    try {
+        const movieUrl = request.query.url;
+
+        if (!movieUrl) {
+            return reply.status(400).send({
+                status: false,
+                error: 'URL required'
+            });
+        }
+
+        const { data } = await axios.get(movieUrl, {
+            headers,
+            timeout: 15000
+        });
+
+        const $ = cheerio.load(data);
+
+        // ----------------------------------------------------
+        // TITLE
+        // ----------------------------------------------------
+
+        let title = $('h1.entry-title, h1.title-post, h1').first().text().trim();
+
+        if (!title || /download links?/i.test(title)) {
+            title = (
+                $('meta[property="og:title"]').attr('content') ||
+                $('title').text() ||
+                ''
+            )
+                .replace(/\s*[|–-]\s*cine\s*subz.*$/i, '')
+                .trim();
+        }
+
+        // ----------------------------------------------------
+        // POSTER
+        // ----------------------------------------------------
+
+        const posterEl = $(
+            '.poster img, .entry-content img, .post-thumbnail img, img[class*="poster"]'
+        ).first();
+
+        let poster =
+            posterEl.attr('src') ||
+            posterEl.attr('data-src') ||
+            posterEl.attr('data-lazy-src') ||
+            '';
+
+        // ----------------------------------------------------
+        // DESCRIPTION
+        // ----------------------------------------------------
+
+        let description = '';
+
+        const descriptionSelectors = [
+            '.entry-content .description',
+            '.entry-content .summary',
+            '.entry-content .story',
+            '.movie-description',
+            '.movie-summary',
+            '.description',
+            '.summary',
+            '[class*="description"]',
+            '[class*="summary"]'
+        ];
+
+        for (const selector of descriptionSelectors) {
+            const value = $(selector).first().text().trim();
+
+            if (value && value.length > 20) {
+                description = value.replace(/\s+/g, ' ').trim();
+                break;
+            }
+        }
+
+        // ----------------------------------------------------
+        // META / INFO TEXT
+        // ----------------------------------------------------
+
+        const pageText = $('body')
+            .text()
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        // ----------------------------------------------------
+        // YEAR
+        // ----------------------------------------------------
+
+        let year = null;
+
+        const yearMatch =
+            pageText.match(/\b((?:19|20)\d{2})\b/);
+
+        if (yearMatch) {
+            year = yearMatch[1];
+        }
+
+        // ----------------------------------------------------
+        // IMDb
+        // ----------------------------------------------------
+
+        let imdb = null;
+
+        const imdbMatch = pageText.match(
+            /IMDb\s*(?:Rating)?\s*[:\-]?\s*(\d{1,2}(?:\.\d)?)/i
+        );
+
+        if (imdbMatch) {
+            imdb = imdbMatch[1];
+        }
+
+        // Structured data fallback
+        if (!imdb) {
+            const ratingMeta =
+                $('meta[itemprop="ratingValue"]').attr('content') ||
+                $('[itemprop="ratingValue"]').first().text().trim();
+
+            if (ratingMeta) {
+                imdb = ratingMeta;
+            }
+        }
+
+        // ----------------------------------------------------
+        // DURATION
+        // ----------------------------------------------------
+
+        let duration = null;
+
+        const durationMatch = pageText.match(
+            /(?:Runtime|Duration|Run Time)\s*[:\-]?\s*([0-9]+\s*(?:h|hr|hrs|hour|hours)?(?:\s*[0-9]+\s*(?:m|min|mins|minute|minutes))?)/i
+        );
+
+        if (durationMatch) {
+            duration = durationMatch[1].trim();
+        }
+
+        // HTML5/schema.org duration fallback
+        if (!duration) {
+            duration =
+                $('[itemprop="duration"]').attr('content') ||
+                $('[itemprop="duration"]').first().text().trim() ||
+                null;
+        }
+
+        // ----------------------------------------------------
+        // DIRECTOR
+        // ----------------------------------------------------
+
+        const director = [];
+
+        $(
+            '[itemprop="director"] a, ' +
+            '[itemprop="director"] span, ' +
+            '.director a, ' +
+            '.directors a'
+        ).each((_, el) => {
+            const name = $(el).text().trim();
+
+            if (name && !director.includes(name)) {
+                director.push(name);
+            }
+        });
+
+        // Text fallback
+        if (director.length === 0) {
+            const match = pageText.match(
+                /Director\s*[:\-]\s*([^|•\n]+?)(?=\s+(?:Stars?|Actors?|Cast|Genre|Genres?)\s*[:\-]|$)/i
+            );
+
+            if (match) {
+                match[1]
+                    .split(/,\s*|\s+&\s+/)
+                    .map(x => x.trim())
+                    .filter(Boolean)
+                    .forEach(name => {
+                        if (!director.includes(name)) {
+                            director.push(name);
+                        }
+                    });
+            }
+        }
+
+        // ----------------------------------------------------
+        // ACTORS / CAST
+        // ----------------------------------------------------
+
+        const actors = [];
+
+        $(
+            '[itemprop="actor"] a, ' +
+            '[itemprop="actor"] span, ' +
+            '.actor a, ' +
+            '.actors a, ' +
+            '.cast a'
+        ).each((_, el) => {
+            const name = $(el).text().trim();
+
+            if (name && !actors.includes(name)) {
+                actors.push(name);
+            }
+        });
+
+        // Text fallback
+        if (actors.length === 0) {
+            const match = pageText.match(
+                /(?:Stars?|Actors?|Cast)\s*[:\-]\s*([^|]+?)(?=\s+(?:Director|Genre|Genres?|Runtime|Duration)\s*[:\-]|$)/i
+            );
+
+            if (match) {
+                match[1]
+                    .split(/,\s*|\s+&\s+/)
+                    .map(x => x.trim())
+                    .filter(Boolean)
+                    .forEach(name => {
+                        if (!actors.includes(name)) {
+                            actors.push(name);
+                        }
+                    });
+            }
+        }
+
+        // ----------------------------------------------------
+        // GENRES
+        // ----------------------------------------------------
+
+        const genres = [];
+
+        $(
+            'a[href*="/genre/"], ' +
+            '.genre a, ' +
+            '.genres a'
+        ).each((_, el) => {
+            const genre = $(el).text().trim();
+
+            if (genre && !genres.includes(genre)) {
+                genres.push(genre);
+            }
+        });
+
+        return {
+            status: true,
+            result: {
+                title,
+                poster,
+                year,
+                imdb,
+                duration,
+                description,
+                director,
+                actors,
+                genres
+            }
+        };
+
+    } catch (err) {
+        console.error('Movie Info Error:', err.message);
+
+        return reply.status(500).send({
+            status: false,
+            error: err.message
+        });
+    }
+});
+
 // Resolve Endpoint - zt-links / csplayer link එකකින් අලුත් token සහිත direct link ගන්න
 // (token expire වුනොත්, හෝ download කරන්න කලින් fresh එකක් ගන්න)
 fastify.get('/api/resolve', async (request, reply) => {
